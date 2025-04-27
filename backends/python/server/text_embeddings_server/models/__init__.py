@@ -1,22 +1,21 @@
-import os
-import torch
-
-from loguru import logger
 from pathlib import Path
 from typing import Optional
+
+from loguru import logger
 from transformers import AutoConfig
-from transformers.models.bert import BertConfig
+import torch
 
 from text_embeddings_server.models.model import Model
-from text_embeddings_server.models.masked_model import MaskedLanguageModel
 from text_embeddings_server.models.default_model import DefaultModel
-from text_embeddings_server.models.classification_model import ClassificationModel
-from text_embeddings_server.models.flash_mistral import FlashMistral
-from text_embeddings_server.utils.device import get_device, use_ipex
+from text_embeddings_server.models.rerank_model import RerankModel
+from ..utils.env import ENV
+if ENV.backend == 'atb':
+    import torch_npu
+else:
+    import mindietorch
 
 __all__ = ["Model"]
 
-TRUST_REMOTE_CODE = os.getenv("TRUST_REMOTE_CODE", "false").lower() in ["true", "1"]
 # Disable gradients
 torch.set_grad_enabled(False)
 
@@ -31,123 +30,61 @@ if FLASH_ATTENTION:
     __all__.append(FlashBert)
 
 
-def get_model(model_path: Path, dtype: Optional[str], pool: str):
+def get_model(model_path: Path, dtype: Optional[str]):
+    """Loads and returns the appropriate model class based on given path, data type and backend type.
+
+    Args:
+        model_path: The path to the pre-trained model.
+        dtype: The data type of the model. If not specified or invalid, a RuntimeError will be raised.
+
+    Returns:
+        Model: An instance of a subclass of the `Model` class, which could either be:
+            - RerankModel (if the architectures[0] in config.json ends with 'Classification')
+            - FlashBert (if the model is based on BERT and CUDA is available)
+            - DefaultModel (if all conditions above are not met)
+
+    Raises:
+        RuntimeError: If an unknown data type is provided for `dtype`.
+        ValueError: If the device is CPU and the dtype is not `float32`.
+    """
     if dtype == "float32":
-        datatype = torch.float32
+        dtype = torch.float32
     elif dtype == "float16":
-        datatype = torch.float16
+        dtype = torch.float16
     elif dtype == "bfloat16":
-        datatype = torch.bfloat16
+        dtype = torch.bfloat16
     else:
         raise RuntimeError(f"Unknown dtype {dtype}")
 
-    device = get_device()
-    logger.info(f"backend device: {device}")
+    if ENV.device_id:
+        if ENV.backend == 'atb':
+            torch.npu.set_compile_mode(jit_compile=False)
+            option = {"NPU_FUZZY_COMPILE_BLACKLIST": "ReduceProd"}
+            torch.npu.set_option(option)
+            device = torch.device(f"npu:{int(ENV.device_id)}")
+            torch.npu.set_device(torch.device(f"npu:{int(ENV.device_id)}"))
+        else:
+            mindietorch.set_device(int(ENV.device_id))
+            device = torch.device(f"npu:{int(ENV.device_id)}")
+    elif torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        if dtype != torch.float32:
+            raise ValueError("CPU device only supports float32 dtype")
+        device = torch.device("cpu")
 
-    config = AutoConfig.from_pretrained(model_path, trust_remote_code=TRUST_REMOTE_CODE)
-    if config.model_type == "bert":
-        config: BertConfig
+    config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    if config.architectures[0].endswith("Classification"):
+        return RerankModel(model_path, device, dtype)
+    else:
         if (
-            use_ipex()
-            or device.type in ["cuda", "hpu"]
+            config.model_type == "bert"
+            and device.type == "cuda"
             and config.position_embedding_type == "absolute"
-            and datatype in [torch.float16, torch.bfloat16]
+            and dtype in [torch.float16, torch.bfloat16]
             and FLASH_ATTENTION
         ):
-            if pool != "cls":
-                if config.architectures[0].endswith("ForMaskedLM") and pool == "splade":
-                    return MaskedLanguageModel(
-                        model_path,
-                        device,
-                        datatype,
-                        trust_remote=TRUST_REMOTE_CODE,
-                    )
-                return DefaultModel(
-                    model_path, device, datatype, pool, trust_remote=TRUST_REMOTE_CODE
-                )
-            try:
-                return FlashBert(model_path, device, datatype)
-            except FileNotFoundError as e:
-                logger.info(
-                    "Do not have safetensors file for this model, use default transformers model path instead"
-                )
-                return DefaultModel(
-                    model_path, device, datatype, pool, trust_remote=TRUST_REMOTE_CODE
-                )
-        if config.architectures[0].endswith("Classification"):
-            return ClassificationModel(
-                model_path, device, datatype, trust_remote=TRUST_REMOTE_CODE
-            )
-        elif config.architectures[0].endswith("ForMaskedLM") and pool == "splade":
-            return MaskedLanguageModel(
-                model_path, device, datatype, trust_remote=TRUST_REMOTE_CODE
-            )
+            return FlashBert(model_path, device, dtype)
         else:
-            return DefaultModel(
-                model_path,
-                device,
-                datatype,
-                pool,
-                trust_remote=TRUST_REMOTE_CODE,
-            )
-    elif config.model_type == "mistral" and device.type == "hpu":
-        try:
-            return FlashMistral(
-                model_path,
-                device,
-                datatype,
-                pool,
-            )
-        except FileNotFoundError as e:
-            return DefaultModel(
-                model_path,
-                device,
-                datatype,
-                pool,
-                trust_remote=TRUST_REMOTE_CODE,
-            )
-    else:
-        if device.type == "hpu":
-            from habana_frameworks.torch.hpu import wrap_in_hpu_graph
-
-            if config.architectures[0].endswith("Classification"):
-                model_handle = ClassificationModel(
-                    model_path,
-                    device,
-                    datatype,
-                    trust_remote=TRUST_REMOTE_CODE,
-                )
-            elif config.architectures[0].endswith("ForMaskedLM") and pool == "splade":
-                model_handle = MaskedLanguageModel(
-                    model_path, device, datatype, trust_remote=TRUST_REMOTE_CODE
-                )
-            else:
-                model_handle = DefaultModel(
-                    model_path,
-                    device,
-                    datatype,
-                    pool,
-                    trust_remote=TRUST_REMOTE_CODE,
-                )
-            model_handle.model = wrap_in_hpu_graph(model_handle.model)
-            return model_handle
-        elif use_ipex():
-            if config.architectures[0].endswith("Classification"):
-                return ClassificationModel(
-                    model_path,
-                    device,
-                    datatype,
-                    trust_remote=TRUST_REMOTE_CODE,
-                )
-            elif config.architectures[0].endswith("ForMaskedLM") and pool == "splade":
-                return MaskedLanguageModel(
-                    model_path, device, datatype, trust_remote=TRUST_REMOTE_CODE
-                )
-            else:
-                return DefaultModel(
-                    model_path,
-                    device,
-                    datatype,
-                    pool,
-                    trust_remote=TRUST_REMOTE_CODE,
-                )
+            return DefaultModel(model_path, device, dtype)
+    raise NotImplementedError

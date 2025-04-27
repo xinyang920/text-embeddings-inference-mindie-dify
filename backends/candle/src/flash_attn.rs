@@ -31,17 +31,12 @@ pub(crate) fn flash_attn_varlen(
     max_seqlen_k: usize,
     softmax_scale: f32,
     causal: bool,
-    window_size_left: Option<usize>,
-    window_size_right: Option<usize>,
 ) -> Result<Tensor, candle::Error> {
     let runtime_compute_cap = get_runtime_compute_cap();
 
     if runtime_compute_cap == 75 {
         if alibi_slopes.is_some() {
             candle::bail!("Flash attention v1 does not support alibi");
-        }
-        if window_size_left.is_some() | window_size_right.is_some() {
-            candle::bail!("Flash attention v1 does not support attention windowing");
         }
 
         #[cfg(feature = "flash-attn-v1")]
@@ -64,18 +59,10 @@ pub(crate) fn flash_attn_varlen(
     } else if (80..90).contains(&runtime_compute_cap) || runtime_compute_cap == 90 {
         #[cfg(feature = "flash-attn")]
         {
-            use candle_flash_attn::{flash_attn_varlen_alibi_windowed, flash_attn_varlen_windowed};
-
-            let window_size_right = if causal {
-                Some(0)
-            } else if window_size_right.is_some() {
-                window_size_right
-            } else {
-                None
-            };
+            use candle_flash_attn::{flash_attn_varlen, flash_attn_varlen_alibi};
 
             let attention = if let Some(alibi_slopes) = alibi_slopes {
-                flash_attn_varlen_alibi_windowed(
+                flash_attn_varlen_alibi(
                     q,
                     k,
                     v,
@@ -85,11 +72,10 @@ pub(crate) fn flash_attn_varlen(
                     max_seqlen_q,
                     max_seqlen_k,
                     softmax_scale,
-                    window_size_left,
-                    window_size_right,
+                    causal,
                 )
             } else {
-                flash_attn_varlen_windowed(
+                flash_attn_varlen(
                     q,
                     k,
                     v,
@@ -98,8 +84,7 @@ pub(crate) fn flash_attn_varlen(
                     max_seqlen_q,
                     max_seqlen_k,
                     softmax_scale,
-                    window_size_left,
-                    window_size_right,
+                    causal,
                 )
             };
 

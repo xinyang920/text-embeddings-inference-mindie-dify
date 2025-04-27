@@ -1,10 +1,8 @@
 FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS base-builder
 
-ENV SCCACHE=0.10.0
+ENV SCCACHE=0.5.4
 ENV RUSTC_WRAPPER=/usr/local/bin/sccache
 ENV PATH="/root/.cargo/bin:${PATH}"
-# aligned with `cargo-chef` version in `lukemathwalker/cargo-chef:latest-rust-1.85-bookworm`
-ENV CARGO_CHEF=0.1.71
 
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     curl \
@@ -17,7 +15,7 @@ RUN curl -fsSL https://github.com/mozilla/sccache/releases/download/v$SCCACHE/sc
     chmod +x /usr/local/bin/sccache
 
 RUN curl https://sh.rustup.rs -sSf | bash -s -- -y
-RUN cargo install cargo-chef --version $CARGO_CHEF --locked
+RUN cargo install cargo-chef --locked
 
 FROM base-builder AS planner
 
@@ -38,47 +36,39 @@ ARG DOCKER_LABEL
 ARG VERTEX="false"
 
 # sccache specific variables
+ARG ACTIONS_CACHE_URL
+ARG ACTIONS_RUNTIME_TOKEN
 ARG SCCACHE_GHA_ENABLED
 
-# Limit parallelism
+# limit the number of kernels built at the same time
 ARG RAYON_NUM_THREADS=4
-ARG CARGO_BUILD_JOBS
-ARG CARGO_BUILD_INCREMENTAL
 
 WORKDIR /usr/src
 
 COPY --from=planner /usr/src/recipe.json recipe.json
 
-RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
-    --mount=type=secret,id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN \
-    if [ $VERTEX = "true" ]; \
+RUN if [ $VERTEX = "true" ]; \
     then \
       cargo chef cook --release --features google --recipe-path recipe.json && sccache -s; \
     else \
       cargo chef cook --release --recipe-path recipe.json && sccache -s; \
     fi;
 
-RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
-    --mount=type=secret,id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN \
-    if [ $VERTEX = "true" ]; \
+RUN if [ $VERTEX = "true" ]; \
     then \
       CUDA_COMPUTE_CAP=75 cargo chef cook --release --features google --features candle-cuda-turing --recipe-path recipe.json && sccache -s; \
     else \
       CUDA_COMPUTE_CAP=75 cargo chef cook --release --features candle-cuda-turing --recipe-path recipe.json && sccache -s; \
     fi;
 
-RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
-    --mount=type=secret,id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN \
-    if [ $VERTEX = "true" ]; \
+RUN if [ $VERTEX = "true" ]; \
     then \
       CUDA_COMPUTE_CAP=80 cargo chef cook --release --features google --features candle-cuda --recipe-path recipe.json && sccache -s; \
     else \
       CUDA_COMPUTE_CAP=80 cargo chef cook --release --features candle-cuda --recipe-path recipe.json && sccache -s; \
     fi;
 
-RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
-    --mount=type=secret,id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN \
-    if [ $VERTEX = "true" ]; \
+RUN if [ $VERTEX = "true" ]; \
     then \
       CUDA_COMPUTE_CAP=90 cargo chef cook --release --features google --features candle-cuda --recipe-path recipe.json && sccache -s; \
     else \
@@ -91,9 +81,7 @@ COPY router router
 COPY Cargo.toml ./
 COPY Cargo.lock ./
 
-RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
-    --mount=type=secret,id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN \
-    if [ $VERTEX = "true" ]; \
+RUN if [ $VERTEX = "true" ]; \
     then \
         CUDA_COMPUTE_CAP=75 cargo build --release --bin text-embeddings-router -F candle-cuda-turing -F google  && sccache -s; \
     else \
@@ -102,9 +90,7 @@ RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
 
 RUN mv /usr/src/target/release/text-embeddings-router /usr/src/target/release/text-embeddings-router-75
 
-RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
-    --mount=type=secret,id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN \
-    if [ $VERTEX = "true" ]; \
+RUN if [ $VERTEX = "true" ]; \
     then \
         CUDA_COMPUTE_CAP=80 cargo build --release --bin text-embeddings-router -F candle-cuda -F google  && sccache -s; \
     else \
@@ -113,9 +99,7 @@ RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
 
 RUN mv /usr/src/target/release/text-embeddings-router /usr/src/target/release/text-embeddings-router-80
 
-RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
-    --mount=type=secret,id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN \
-    if [ $VERTEX = "true" ]; \
+RUN if [ $VERTEX = "true" ]; \
     then \
         CUDA_COMPUTE_CAP=90 cargo build --release --bin text-embeddings-router -F candle-cuda -F google  && sccache -s; \
     else \
@@ -124,19 +108,13 @@ RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
 
 RUN mv /usr/src/target/release/text-embeddings-router /usr/src/target/release/text-embeddings-router-90
 
-FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04 AS base
+FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04 as base
 
 ARG DEFAULT_USE_FLASH_ATTENTION=True
 
 ENV HUGGINGFACE_HUB_CACHE=/data \
     PORT=80 \
     USE_FLASH_ATTENTION=$DEFAULT_USE_FLASH_ATTENTION
-
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    ca-certificates \
-    libssl-dev \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /usr/src/target/release/text-embeddings-router-75 /usr/local/bin/text-embeddings-router-75
 COPY --from=builder /usr/src/target/release/text-embeddings-router-80 /usr/local/bin/text-embeddings-router-80

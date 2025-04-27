@@ -10,7 +10,7 @@
       "name": "Apache 2.0",
       "url": "https://www.apache.org/licenses/LICENSE-2.0"
     },
-    "version": "1.7.0"
+    "version": "1.2.3"
   },
   "paths": {
     "/decode": {
@@ -19,6 +19,7 @@
           "Text Embeddings Inference"
         ],
         "summary": "Decode input ids",
+        "description": "Decode input ids",
         "operationId": "decode",
         "requestBody": {
           "content": {
@@ -64,6 +65,7 @@
           "Text Embeddings Inference"
         ],
         "summary": "Get Embeddings. Returns a 424 status code if the model is not an embedding model.",
+        "description": "Get Embeddings. Returns a 424 status code if the model is not an embedding model.",
         "operationId": "embed",
         "requestBody": {
           "content": {
@@ -151,7 +153,7 @@
           "Text Embeddings Inference"
         ],
         "summary": "Get all Embeddings without Pooling.",
-        "description": "Returns a 424 status code if the model is not an embedding model.",
+        "description": "Get all Embeddings without Pooling.\nReturns a 424 status code if the model is not an embedding model.",
         "operationId": "embed_all",
         "requestBody": {
           "content": {
@@ -239,6 +241,7 @@
           "Text Embeddings Inference"
         ],
         "summary": "Get Sparse Embeddings. Returns a 424 status code if the model is not an embedding model with SPLADE pooling.",
+        "description": "Get Sparse Embeddings. Returns a 424 status code if the model is not an embedding model with SPLADE pooling.",
         "operationId": "embed_sparse",
         "requestBody": {
           "content": {
@@ -320,12 +323,101 @@
         }
       }
     },
+    "/embeddings": {
+      "post": {
+        "tags": [
+          "Text Embeddings Inference"
+        ],
+        "summary": "OpenAI compatible route. Returns a 424 status code if the model is not an embedding model.",
+        "description": "OpenAI compatible route. Returns a 424 status code if the model is not an embedding model.",
+        "operationId": "openai_embed",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenAICompatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Embeddings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAICompatResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Batch size error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAICompatErrorResponse"
+                },
+                "example": {
+                  "message": "Batch size error",
+                  "type": "validation"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Tokenization error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAICompatErrorResponse"
+                },
+                "example": {
+                  "message": "Tokenization error",
+                  "type": "tokenizer"
+                }
+              }
+            }
+          },
+          "424": {
+            "description": "Embedding Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAICompatErrorResponse"
+                },
+                "example": {
+                  "message": "Inference failed",
+                  "type": "backend"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Model is overloaded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAICompatErrorResponse"
+                },
+                "example": {
+                  "message": "Model is overloaded",
+                  "type": "overloaded"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health": {
       "get": {
         "tags": [
           "Text Embeddings Inference"
         ],
         "summary": "Health check method",
+        "description": "Health check method",
         "operationId": "health",
         "responses": {
           "200": {
@@ -354,6 +446,7 @@
           "Text Embeddings Inference"
         ],
         "summary": "Text Embeddings Inference endpoint info",
+        "description": "Text Embeddings Inference endpoint info",
         "operationId": "get_model_info",
         "responses": {
           "200": {
@@ -375,6 +468,7 @@
           "Text Embeddings Inference"
         ],
         "summary": "Prometheus metrics scrape endpoint",
+        "description": "Prometheus metrics scrape endpoint",
         "operationId": "metrics",
         "responses": {
           "200": {
@@ -396,6 +490,7 @@
           "Text Embeddings Inference"
         ],
         "summary": "Get Predictions. Returns a 424 status code if the model is not a Sequence Classification model",
+        "description": "Get Predictions. Returns a 424 status code if the model is not a Sequence Classification model",
         "operationId": "predict",
         "requestBody": {
           "content": {
@@ -483,7 +578,7 @@
           "Text Embeddings Inference"
         ],
         "summary": "Get Ranks. Returns a 424 status code if the model is not a Sequence Classification model with",
-        "description": "a single class.",
+        "description": "Get Ranks. Returns a 424 status code if the model is not a Sequence Classification model with\na single class.",
         "operationId": "rerank",
         "requestBody": {
           "content": {
@@ -565,99 +660,13 @@
         }
       }
     },
-    "/similarity": {
-      "post": {
-        "tags": [
-          "Text Embeddings Inference"
-        ],
-        "summary": "Get Sentence Similarity. Returns a 424 status code if the model is not an embedding model.",
-        "operationId": "similarity",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SimilarityRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Sentence Similarity",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SimilarityResponse"
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "Batch size error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                },
-                "example": {
-                  "error": "Batch size error",
-                  "error_type": "validation"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Tokenization error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                },
-                "example": {
-                  "error": "Tokenization error",
-                  "error_type": "tokenizer"
-                }
-              }
-            }
-          },
-          "424": {
-            "description": "Embedding Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                },
-                "example": {
-                  "error": "Inference failed",
-                  "error_type": "backend"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "Model is overloaded",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                },
-                "example": {
-                  "error": "Model is overloaded",
-                  "error_type": "overloaded"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/tokenize": {
       "post": {
         "tags": [
           "Text Embeddings Inference"
         ],
         "summary": "Tokenize inputs",
+        "description": "Tokenize inputs",
         "operationId": "tokenize",
         "requestBody": {
           "content": {
@@ -697,18 +706,19 @@
         }
       }
     },
-    "/v1/embeddings": {
+    "/vertex": {
       "post": {
         "tags": [
           "Text Embeddings Inference"
         ],
-        "summary": "OpenAI compatible route. Returns a 424 status code if the model is not an embedding model.",
-        "operationId": "openai_embed",
+        "summary": "Generate embeddings from a Vertex request",
+        "description": "Generate embeddings from a Vertex request",
+        "operationId": "vertex_compatibility",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/OpenAICompatRequest"
+                "$ref": "#/components/schemas/VertexRequest"
               }
             }
           },
@@ -716,25 +726,18 @@
         },
         "responses": {
           "200": {
-            "description": "Embeddings",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/OpenAICompatResponse"
-                }
-              }
-            }
+            "description": "Results"
           },
           "413": {
             "description": "Batch size error",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/OpenAICompatErrorResponse"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 },
                 "example": {
-                  "message": "Batch size error",
-                  "type": "validation"
+                  "error": "Batch size error",
+                  "error_type": "validation"
                 }
               }
             }
@@ -744,25 +747,25 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/OpenAICompatErrorResponse"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 },
                 "example": {
-                  "message": "Tokenization error",
-                  "type": "tokenizer"
+                  "error": "Tokenization error",
+                  "error_type": "tokenizer"
                 }
               }
             }
           },
           "424": {
-            "description": "Embedding Error",
+            "description": "Error",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/OpenAICompatErrorResponse"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 },
                 "example": {
-                  "message": "Inference failed",
-                  "type": "backend"
+                  "error": "Inference failed",
+                  "error_type": "backend"
                 }
               }
             }
@@ -772,11 +775,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/OpenAICompatErrorResponse"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 },
                 "example": {
-                  "message": "Model is overloaded",
-                  "type": "overloaded"
+                  "error": "Model is overloaded",
+                  "error_type": "overloaded"
                 }
               }
             }
@@ -849,26 +852,10 @@
           "inputs": {
             "$ref": "#/components/schemas/Input"
           },
-          "prompt_name": {
-            "type": "string",
-            "description": "The name of the prompt that should be used by for encoding. If not set, no prompt\nwill be applied.\n\nMust be a key in the `sentence-transformers` configuration `prompts` dictionary.\n\nFor example if ``prompt_name`` is \"query\" and the ``prompts`` is {\"query\": \"query: \", ...},\nthen the sentence \"What is the capital of France?\" will be encoded as\n\"query: What is the capital of France?\" because the prompt text will be prepended before\nany text to encode.",
-            "default": "null",
-            "example": "null",
-            "nullable": true
-          },
           "truncate": {
             "type": "boolean",
             "default": "false",
-            "example": "false",
-            "nullable": true
-          },
-          "truncation_direction": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/TruncationDirection"
-              }
-            ],
-            "default": "right"
+            "example": "false"
           }
         }
       },
@@ -908,26 +895,10 @@
             "default": "true",
             "example": "true"
           },
-          "prompt_name": {
-            "type": "string",
-            "description": "The name of the prompt that should be used by for encoding. If not set, no prompt\nwill be applied.\n\nMust be a key in the `sentence-transformers` configuration `prompts` dictionary.\n\nFor example if ``prompt_name`` is \"query\" and the ``prompts`` is {\"query\": \"query: \", ...},\nthen the sentence \"What is the capital of France?\" will be encoded as\n\"query: What is the capital of France?\" because the prompt text will be prepended before\nany text to encode.",
-            "default": "null",
-            "example": "null",
-            "nullable": true
-          },
           "truncate": {
             "type": "boolean",
             "default": "false",
-            "example": "false",
-            "nullable": true
-          },
-          "truncation_direction": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/TruncationDirection"
-              }
-            ],
-            "default": "right"
+            "example": "false"
           }
         }
       },
@@ -957,26 +928,10 @@
           "inputs": {
             "$ref": "#/components/schemas/Input"
           },
-          "prompt_name": {
-            "type": "string",
-            "description": "The name of the prompt that should be used by for encoding. If not set, no prompt\nwill be applied.\n\nMust be a key in the `sentence-transformers` configuration `prompts` dictionary.\n\nFor example if ``prompt_name`` is \"query\" and the ``prompts`` is {\"query\": \"query: \", ...},\nthen the sentence \"What is the capital of France?\" will be encoded as\n\"query: What is the capital of France?\" because the prompt text will be prepended before\nany text to encode.",
-            "default": "null",
-            "example": "null",
-            "nullable": true
-          },
           "truncate": {
             "type": "boolean",
             "default": "false",
-            "example": "false",
-            "nullable": true
-          },
-          "truncation_direction": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/TruncationDirection"
-              }
-            ],
-            "default": "right"
+            "example": "false"
           }
         }
       },
@@ -989,20 +944,6 @@
           }
         }
       },
-      "Embedding": {
-        "oneOf": [
-          {
-            "type": "array",
-            "items": {
-              "type": "number",
-              "format": "float"
-            }
-          },
-          {
-            "type": "string"
-          }
-        ]
-      },
       "EmbeddingModel": {
         "type": "object",
         "required": [
@@ -1014,13 +955,6 @@
             "example": "cls"
           }
         }
-      },
-      "EncodingFormat": {
-        "type": "string",
-        "enum": [
-          "float",
-          "base64"
-        ]
       },
       "ErrorResponse": {
         "type": "object",
@@ -1057,14 +991,10 @@
           "max_input_length",
           "max_batch_tokens",
           "max_client_batch_size",
-          "auto_truncate",
           "tokenization_workers",
           "version"
         ],
         "properties": {
-          "auto_truncate": {
-            "type": "boolean"
-          },
           "docker_label": {
             "type": "string",
             "example": "null",
@@ -1135,12 +1065,12 @@
       "Input": {
         "oneOf": [
           {
-            "$ref": "#/components/schemas/InputType"
+            "type": "string"
           },
           {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/InputType"
+              "type": "string"
             }
           }
         ]
@@ -1164,21 +1094,6 @@
                 "format": "int32",
                 "minimum": 0
               }
-            }
-          }
-        ]
-      },
-      "InputType": {
-        "oneOf": [
-          {
-            "type": "string"
-          },
-          {
-            "type": "array",
-            "items": {
-              "type": "integer",
-              "format": "int32",
-              "minimum": 0
             }
           }
         ]
@@ -1229,7 +1144,16 @@
         ],
         "properties": {
           "embedding": {
-            "$ref": "#/components/schemas/Embedding"
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "float"
+            },
+            "example": [
+              0.0,
+              1.0,
+              2.0
+            ]
           },
           "index": {
             "type": "integer",
@@ -1269,14 +1193,6 @@
           "input"
         ],
         "properties": {
-          "encoding_format": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/EncodingFormat"
-              }
-            ],
-            "default": "float"
-          },
           "input": {
             "$ref": "#/components/schemas/Input"
           },
@@ -1401,16 +1317,7 @@
           "truncate": {
             "type": "boolean",
             "default": "false",
-            "example": "false",
-            "nullable": true
-          },
-          "truncation_direction": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/TruncationDirection"
-              }
-            ],
-            "default": "right"
+            "example": "false"
           }
         }
       },
@@ -1455,7 +1362,7 @@
         "type": "object",
         "required": [
           "index",
-          "score"
+          "relevance_score"
         ],
         "properties": {
           "index": {
@@ -1463,7 +1370,7 @@
             "example": "0",
             "minimum": 0
           },
-          "score": {
+          "relevance_score": {
             "type": "number",
             "format": "float",
             "example": "1.0"
@@ -1480,7 +1387,7 @@
         "type": "object",
         "required": [
           "query",
-          "texts"
+          "documents"
         ],
         "properties": {
           "query": {
@@ -1497,7 +1404,7 @@
             "default": "false",
             "example": "false"
           },
-          "texts": {
+          "documents": {
             "type": "array",
             "items": {
               "type": "string"
@@ -1509,109 +1416,20 @@
           "truncate": {
             "type": "boolean",
             "default": "false",
-            "example": "false",
-            "nullable": true
-          },
-          "truncation_direction": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/TruncationDirection"
-              }
-            ],
-            "default": "right"
+            "example": "false"
           }
         }
       },
       "RerankResponse": {
-        "type": "array",
-        "items": {
-          "$ref": "#/components/schemas/Rank"
-        }
-      },
-      "SimilarityInput": {
         "type": "object",
-        "required": [
-          "source_sentence",
-          "sentences"
-        ],
         "properties": {
-          "sentences": {
+          "results": {
             "type": "array",
             "items": {
-              "type": "string"
-            },
-            "description": "A list of strings which will be compared against the source_sentence.",
-            "example": [
-              "What is Machine Learning?"
-            ]
-          },
-          "source_sentence": {
-            "type": "string",
-            "description": "The string that you wish to compare the other strings with. This can be a phrase, sentence,\nor longer passage, depending on the model being used.",
-            "example": "What is Deep Learning?"
+              "$ref": "#/components/schemas/Rank"
+            }
           }
         }
-      },
-      "SimilarityParameters": {
-        "type": "object",
-        "required": [
-          "truncation_direction"
-        ],
-        "properties": {
-          "prompt_name": {
-            "type": "string",
-            "description": "The name of the prompt that should be used by for encoding. If not set, no prompt\nwill be applied.\n\nMust be a key in the `sentence-transformers` configuration `prompts` dictionary.\n\nFor example if ``prompt_name`` is \"query\" and the ``prompts`` is {\"query\": \"query: \", ...},\nthen the sentence \"What is the capital of France?\" will be encoded as\n\"query: What is the capital of France?\" because the prompt text will be prepended before\nany text to encode.",
-            "default": "null",
-            "example": "null",
-            "nullable": true
-          },
-          "truncate": {
-            "type": "boolean",
-            "default": "false",
-            "example": "false",
-            "nullable": true
-          },
-          "truncation_direction": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/TruncationDirection"
-              }
-            ],
-            "default": "right"
-          }
-        }
-      },
-      "SimilarityRequest": {
-        "type": "object",
-        "required": [
-          "inputs"
-        ],
-        "properties": {
-          "inputs": {
-            "$ref": "#/components/schemas/SimilarityInput"
-          },
-          "parameters": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/SimilarityParameters"
-              }
-            ],
-            "default": "null",
-            "nullable": true
-          }
-        }
-      },
-      "SimilarityResponse": {
-        "type": "array",
-        "items": {
-          "type": "number",
-          "format": "float"
-        },
-        "example": [
-          0.0,
-          1.0,
-          0.5
-        ]
       },
       "SimpleToken": {
         "type": "object",
@@ -1666,19 +1484,6 @@
           }
         }
       },
-      "TokenizeInput": {
-        "oneOf": [
-          {
-            "type": "string"
-          },
-          {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
-        ]
-      },
       "TokenizeRequest": {
         "type": "object",
         "required": [
@@ -1691,14 +1496,7 @@
             "example": "true"
           },
           "inputs": {
-            "$ref": "#/components/schemas/TokenizeInput"
-          },
-          "prompt_name": {
-            "type": "string",
-            "description": "The name of the prompt that should be used by for encoding. If not set, no prompt\nwill be applied.\n\nMust be a key in the `sentence-transformers` configuration `prompts` dictionary.\n\nFor example if ``prompt_name`` is \"query\" and the ``prompts`` is {\"query\": \"query: \", ...},\nthen the sentence \"What is the capital of France?\" will be encoded as\n\"query: What is the capital of France?\" because the prompt text will be prepended before\nany text to encode.",
-            "default": "null",
-            "example": "null",
-            "nullable": true
+            "$ref": "#/components/schemas/Input"
           }
         }
       },
@@ -1722,12 +1520,273 @@
           ]
         ]
       },
-      "TruncationDirection": {
-        "type": "string",
-        "enum": [
-          "Left",
-          "Right"
-        ]
+      "VertexInstance": {
+        "oneOf": [
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/EmbedRequest"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "embed"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/EmbedAllRequest"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "embed_all"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/EmbedSparseRequest"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "embed_sparse"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PredictRequest"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "predict"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RerankRequest"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "rerank"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TokenizeRequest"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "tokenize"
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        ],
+        "discriminator": {
+          "propertyName": "type"
+        }
+      },
+      "VertexRequest": {
+        "type": "object",
+        "required": [
+          "instances"
+        ],
+        "properties": {
+          "instances": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VertexInstance"
+            }
+          }
+        }
+      },
+      "VertexResponse": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/VertexResponseInstance"
+        }
+      },
+      "VertexResponseInstance": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "result"
+            ],
+            "properties": {
+              "result": {
+                "$ref": "#/components/schemas/EmbedResponse"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "embed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "result"
+            ],
+            "properties": {
+              "result": {
+                "$ref": "#/components/schemas/EmbedAllResponse"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "embed_all"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "result"
+            ],
+            "properties": {
+              "result": {
+                "$ref": "#/components/schemas/EmbedSparseResponse"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "embed_sparse"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "result"
+            ],
+            "properties": {
+              "result": {
+                "$ref": "#/components/schemas/PredictResponse"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "predict"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "result"
+            ],
+            "properties": {
+              "result": {
+                "$ref": "#/components/schemas/RerankResponse"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "rerank"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "result"
+            ],
+            "properties": {
+              "result": {
+                "$ref": "#/components/schemas/TokenizeResponse"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "tokenize"
+                ]
+              }
+            }
+          }
+        ],
+        "discriminator": {
+          "propertyName": "type"
+        }
       }
     }
   },

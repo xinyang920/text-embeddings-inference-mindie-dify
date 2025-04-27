@@ -1,10 +1,10 @@
-FROM lukemathwalker/cargo-chef:latest-rust-1.85-bookworm AS chef
+FROM lukemathwalker/cargo-chef:latest-rust-1.75-bookworm AS chef
 WORKDIR /usr/src
 
-ENV SCCACHE=0.10.0
+ENV SCCACHE=0.5.4
 ENV RUSTC_WRAPPER=/usr/local/bin/sccache
 
-# Donwload, configure sccache
+# Donwload and configure sccache
 RUN curl -fsSL https://github.com/mozilla/sccache/releases/download/v$SCCACHE/sccache-v$SCCACHE-x86_64-unknown-linux-musl.tar.gz | tar -xzv --strip-components=1 -C /usr/local/bin sccache-v$SCCACHE-x86_64-unknown-linux-musl/sccache && \
     chmod +x /usr/local/bin/sccache
 
@@ -24,12 +24,14 @@ ARG GIT_SHA
 ARG DOCKER_LABEL
 
 # sccache specific variables
+ARG ACTIONS_CACHE_URL
+ARG ACTIONS_RUNTIME_TOKEN
 ARG SCCACHE_GHA_ENABLED
 
 RUN wget -O- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
-    | gpg --dearmor | tee /usr/share/keyrings/oneapi-archive-keyring.gpg > /dev/null && \
-    echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" | \
-    tee /etc/apt/sources.list.d/oneAPI.list
+| gpg --dearmor | tee /usr/share/keyrings/oneapi-archive-keyring.gpg > /dev/null && \
+  echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" | \
+  tee /etc/apt/sources.list.d/oneAPI.list
 
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     intel-oneapi-mkl-devel=2024.0.0-49656 \
@@ -41,9 +43,7 @@ RUN echo "int mkl_serv_intel_cpu_true() {return 1;}" > fakeintel.c && \
 
 COPY --from=planner /usr/src/recipe.json recipe.json
 
-RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
-    --mount=type=secret,id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN \
-    cargo chef cook --release --features ort,candle,mkl --no-default-features --recipe-path recipe.json && sccache -s
+RUN cargo chef cook --release --features candle --features mkl-dynamic --no-default-features --recipe-path recipe.json && sccache -s
 
 COPY backends backends
 COPY core core
@@ -51,13 +51,11 @@ COPY router router
 COPY Cargo.toml ./
 COPY Cargo.lock ./
 
-FROM builder AS http-builder
+FROM builder as http-builder
 
-RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
-    --mount=type=secret,id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN \
-    cargo build --release --bin text-embeddings-router --features ort,candle,mkl,http --no-default-features && sccache -s
+RUN cargo build --release --bin text-embeddings-router -F candle -F mkl-dynamic -F http --no-default-features && sccache -s
 
-FROM builder AS grpc-builder
+FROM builder as grpc-builder
 
 RUN PROTOC_ZIP=protoc-21.12-linux-x86_64.zip && \
     curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v21.12/$PROTOC_ZIP && \
@@ -67,11 +65,9 @@ RUN PROTOC_ZIP=protoc-21.12-linux-x86_64.zip && \
 
 COPY proto proto
 
-RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
-    --mount=type=secret,id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN \
-    cargo build --release --bin text-embeddings-router --features ort,candle,mkl,grpc --no-default-features && sccache -s
+RUN cargo build --release --bin text-embeddings-router -F grpc -F candle -F mkl-dynamic --no-default-features && sccache -s
 
-FROM debian:bookworm-slim AS base
+FROM debian:bookworm-slim as base
 
 ENV HUGGINGFACE_HUB_CACHE=/data \
     PORT=80 \
@@ -99,7 +95,7 @@ COPY --from=builder /opt/intel/oneapi/mkl/latest/lib/intel64/libmkl_avx2.so.2 /u
 COPY --from=builder /opt/intel/oneapi/mkl/latest/lib/intel64/libmkl_avx512.so.2 /usr/local/lib/libmkl_avx512.so.2
 COPY --from=builder /usr/src/libfakeintel.so /usr/local/libfakeintel.so
 
-FROM base AS grpc
+FROM base as grpc
 
 COPY --from=grpc-builder /usr/src/target/release/text-embeddings-router /usr/local/bin/text-embeddings-router
 
@@ -111,7 +107,7 @@ FROM base AS http
 COPY --from=http-builder /usr/src/target/release/text-embeddings-router /usr/local/bin/text-embeddings-router
 
 # Amazon SageMaker compatible image
-FROM http AS sagemaker
+FROM http as sagemaker
 COPY --chmod=775 sagemaker-entrypoint.sh entrypoint.sh
 
 ENTRYPOINT ["./entrypoint.sh"]

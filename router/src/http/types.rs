@@ -193,30 +193,11 @@ impl<'__s> ToSchema<'__s> for PredictInput {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, ToSchema, Eq, Default)]
-pub(crate) enum TruncationDirection {
-    Left,
-    #[default]
-    Right,
-}
-
-impl From<TruncationDirection> for tokenizers::TruncationDirection {
-    fn from(value: TruncationDirection) -> Self {
-        match value {
-            TruncationDirection::Left => Self::Left,
-            TruncationDirection::Right => Self::Right,
-        }
-    }
-}
-
 #[derive(Deserialize, ToSchema)]
 pub(crate) struct PredictRequest {
     pub inputs: PredictInput,
     #[schema(default = "false", example = "false", nullable = true)]
     pub truncate: Option<bool>,
-    #[serde(default)]
-    #[schema(default = "right", example = "right")]
-    pub truncation_direction: TruncationDirection,
     #[serde(default)]
     #[schema(default = "false", example = "false")]
     pub raw_scores: bool,
@@ -242,13 +223,10 @@ pub(crate) struct RerankRequest {
     #[schema(example = "What is Deep Learning?")]
     pub query: String,
     #[schema(example = json!(["Deep Learning is ..."]))]
-    pub texts: Vec<String>,
+    pub documents: Vec<String>,
     #[serde(default)]
     #[schema(default = "false", example = "false", nullable = true)]
     pub truncate: Option<bool>,
-    #[serde(default)]
-    #[schema(default = "right", example = "right")]
-    pub truncation_direction: TruncationDirection,
     #[serde(default)]
     #[schema(default = "false", example = "false")]
     pub raw_scores: bool,
@@ -264,12 +242,15 @@ pub(crate) struct Rank {
     #[schema(nullable = true, example = "Deep Learning is ...", default = "null")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    #[serde(rename = "relevance_score")]
     #[schema(example = "1.0")]
     pub score: f32,
 }
 
 #[derive(Serialize, ToSchema)]
-pub(crate) struct RerankResponse(pub Vec<Rank>);
+pub(crate) struct RerankResponse {
+    pub results: Vec<Rank>
+}
 
 #[derive(Deserialize, ToSchema, Debug)]
 #[serde(untagged)]
@@ -277,7 +258,6 @@ pub(crate) enum InputType {
     String(String),
     Ids(Vec<u32>),
 }
-
 impl InputType {
     pub(crate) fn count_chars(&self) -> usize {
         match self {
@@ -286,7 +266,6 @@ impl InputType {
         }
     }
 }
-
 impl From<InputType> for EncodingInput {
     fn from(value: InputType) -> Self {
         match value {
@@ -295,20 +274,11 @@ impl From<InputType> for EncodingInput {
         }
     }
 }
-
 #[derive(Deserialize, ToSchema)]
 #[serde(untagged)]
 pub(crate) enum Input {
     Single(InputType),
     Batch(Vec<InputType>),
-}
-
-#[derive(Deserialize, ToSchema, Default)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum EncodingFormat {
-    #[default]
-    Float,
-    Base64,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -320,16 +290,6 @@ pub(crate) struct OpenAICompatRequest {
     #[allow(dead_code)]
     #[schema(nullable = true, example = "null")]
     pub user: Option<String>,
-    #[schema(default = "float", example = "float")]
-    #[serde(default)]
-    pub encoding_format: EncodingFormat,
-}
-
-#[derive(Serialize, ToSchema)]
-#[serde(untagged)]
-pub(crate) enum Embedding {
-    Float(Vec<f32>),
-    Base64(String),
 }
 
 #[derive(Serialize, ToSchema)]
@@ -337,7 +297,7 @@ pub(crate) struct OpenAICompatEmbedding {
     #[schema(example = "embedding")]
     pub object: &'static str,
     #[schema(example = json!([0.0, 1.0, 2.0]))]
-    pub embedding: Embedding,
+    pub embedding: Vec<f32>,
     #[schema(example = "0")]
     pub index: usize,
 }
@@ -361,68 +321,11 @@ pub(crate) struct OpenAICompatResponse {
 }
 
 #[derive(Deserialize, ToSchema)]
-pub(crate) struct SimilarityInput {
-    /// The string that you wish to compare the other strings with. This can be a phrase, sentence,
-    /// or longer passage, depending on the model being used.
-    #[schema(example = "What is Deep Learning?")]
-    pub source_sentence: String,
-    /// A list of strings which will be compared against the source_sentence.
-    #[schema(example = json!(["What is Machine Learning?"]))]
-    pub sentences: Vec<String>,
-}
-
-#[derive(Deserialize, ToSchema, Default)]
-pub(crate) struct SimilarityParameters {
-    #[schema(default = "false", example = "false", nullable = true)]
-    pub truncate: Option<bool>,
-    #[serde(default)]
-    #[schema(default = "right", example = "right")]
-    pub truncation_direction: TruncationDirection,
-    /// The name of the prompt that should be used by for encoding. If not set, no prompt
-    /// will be applied.
-    ///
-    /// Must be a key in the `sentence-transformers` configuration `prompts` dictionary.
-    ///
-    /// For example if ``prompt_name`` is "query" and the ``prompts`` is {"query": "query: ", ...},
-    /// then the sentence "What is the capital of France?" will be encoded as
-    /// "query: What is the capital of France?" because the prompt text will be prepended before
-    /// any text to encode.
-    #[schema(default = "null", example = "null", nullable = true)]
-    pub prompt_name: Option<String>,
-}
-
-#[derive(Deserialize, ToSchema)]
-pub(crate) struct SimilarityRequest {
-    pub inputs: SimilarityInput,
-    /// Additional inference parameters for Sentence Similarity
-    #[schema(default = "null", example = "null", nullable = true)]
-    pub parameters: Option<SimilarityParameters>,
-}
-
-#[derive(Serialize, ToSchema)]
-#[schema(example = json!([0.0, 1.0, 0.5]))]
-pub(crate) struct SimilarityResponse(pub Vec<f32>);
-
-#[derive(Deserialize, ToSchema)]
 pub(crate) struct EmbedRequest {
     pub inputs: Input,
     #[serde(default)]
     #[schema(default = "false", example = "false", nullable = true)]
     pub truncate: Option<bool>,
-    #[serde(default)]
-    #[schema(default = "right", example = "right")]
-    pub truncation_direction: TruncationDirection,
-    /// The name of the prompt that should be used by for encoding. If not set, no prompt
-    /// will be applied.
-    ///
-    /// Must be a key in the `sentence-transformers` configuration `prompts` dictionary.
-    ///
-    /// For example if ``prompt_name`` is "query" and the ``prompts`` is {"query": "query: ", ...},
-    /// then the sentence "What is the capital of France?" will be encoded as
-    /// "query: What is the capital of France?" because the prompt text will be prepended before
-    /// any text to encode.
-    #[schema(default = "null", example = "null", nullable = true)]
-    pub prompt_name: Option<String>,
     #[serde(default = "default_normalize")]
     #[schema(default = "true", example = "true")]
     pub normalize: bool,
@@ -442,20 +345,6 @@ pub(crate) struct EmbedSparseRequest {
     #[serde(default)]
     #[schema(default = "false", example = "false", nullable = true)]
     pub truncate: Option<bool>,
-    #[serde(default)]
-    #[schema(default = "right", example = "right")]
-    pub truncation_direction: TruncationDirection,
-    /// The name of the prompt that should be used by for encoding. If not set, no prompt
-    /// will be applied.
-    ///
-    /// Must be a key in the `sentence-transformers` configuration `prompts` dictionary.
-    ///
-    /// For example if ``prompt_name`` is "query" and the ``prompts`` is {"query": "query: ", ...},
-    /// then the sentence "What is the capital of France?" will be encoded as
-    /// "query: What is the capital of France?" because the prompt text will be prepended before
-    /// any text to encode.
-    #[schema(default = "null", example = "null", nullable = true)]
-    pub prompt_name: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -473,20 +362,6 @@ pub(crate) struct EmbedAllRequest {
     #[serde(default)]
     #[schema(default = "false", example = "false", nullable = true)]
     pub truncate: Option<bool>,
-    #[serde(default)]
-    #[schema(default = "right", example = "right")]
-    pub truncation_direction: TruncationDirection,
-    /// The name of the prompt that should be used by for encoding. If not set, no prompt
-    /// will be applied.
-    ///
-    /// Must be a key in the `sentence-transformers` configuration `prompts` dictionary.
-    ///
-    /// For example if ``prompt_name`` is "query" and the ``prompts`` is {"query": "query: ", ...},
-    /// then the sentence "What is the capital of France?" will be encoded as
-    /// "query: What is the capital of France?" because the prompt text will be prepended before
-    /// any text to encode.
-    #[schema(default = "null", example = "null", nullable = true)]
-    pub prompt_name: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -514,17 +389,6 @@ pub(crate) struct TokenizeRequest {
     #[serde(default = "default_add_special_tokens")]
     #[schema(default = "true", example = "true")]
     pub add_special_tokens: bool,
-    /// The name of the prompt that should be used by for encoding. If not set, no prompt
-    /// will be applied.
-    ///
-    /// Must be a key in the `sentence-transformers` configuration `prompts` dictionary.
-    ///
-    /// For example if ``prompt_name`` is "query" and the ``prompts`` is {"query": "query: ", ...},
-    /// then the sentence "What is the capital of France?" will be encoded as
-    /// "query: What is the capital of France?" because the prompt text will be prepended before
-    /// any text to encode.
-    #[schema(default = "null", example = "null", nullable = true)]
-    pub prompt_name: Option<String>,
 }
 
 fn default_add_special_tokens() -> bool {

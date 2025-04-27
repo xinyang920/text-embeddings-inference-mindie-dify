@@ -1,7 +1,7 @@
 use crate::grpc::pb::tei::v1::{
     EmbedAllRequest, EmbedAllResponse, EmbedSparseRequest, EmbedSparseResponse, EncodeRequest,
     EncodeResponse, PredictPairRequest, RerankStreamRequest, SimpleToken, SparseValue,
-    TokenEmbedding, TruncationDirection,
+    TokenEmbedding,
 };
 use crate::grpc::{
     DecodeRequest, DecodeResponse, EmbedRequest, EmbedResponse, InfoRequest, InfoResponse,
@@ -15,9 +15,7 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 use text_embeddings_core::infer::Infer;
-use text_embeddings_core::tokenization::{
-    into_tokens, EncodingInput, SimpleToken as CoreSimpleToken,
-};
+use text_embeddings_core::tokenization::EncodingInput;
 use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt;
@@ -82,17 +80,9 @@ impl TextEmbeddingsService {
         let start_time = Instant::now();
 
         let compute_chars = request.inputs.chars().count();
-        let truncation_direction = convert_truncation_direction(request.truncation_direction);
         let response = self
             .infer
-            .embed_pooled(
-                request.inputs,
-                request.truncate,
-                truncation_direction,
-                request.prompt_name,
-                request.normalize,
-                permit,
-            )
+            .embed_pooled(request.inputs, request.truncate, request.normalize, permit)
             .await
             .map_err(ErrorResponse::from)?;
 
@@ -138,16 +128,9 @@ impl TextEmbeddingsService {
         let start_time = Instant::now();
 
         let compute_chars = request.inputs.chars().count();
-        let truncation_direction = convert_truncation_direction(request.truncation_direction);
         let response = self
             .infer
-            .embed_sparse(
-                request.inputs,
-                request.truncate,
-                truncation_direction,
-                request.prompt_name,
-                permit,
-            )
+            .embed_sparse(request.inputs, request.truncate, permit)
             .await
             .map_err(ErrorResponse::from)?;
 
@@ -204,16 +187,9 @@ impl TextEmbeddingsService {
         let start_time = Instant::now();
 
         let compute_chars = request.inputs.chars().count();
-        let truncation_direction = convert_truncation_direction(request.truncation_direction);
         let response = self
             .infer
-            .embed_all(
-                request.inputs,
-                request.truncate,
-                truncation_direction,
-                request.prompt_name,
-                permit,
-            )
+            .embed_all(request.inputs, request.truncate, permit)
             .await
             .map_err(ErrorResponse::from)?;
 
@@ -260,7 +236,6 @@ impl TextEmbeddingsService {
         &self,
         inputs: I,
         truncate: bool,
-        truncation_direction: tokenizers::TruncationDirection,
         raw_scores: bool,
         permit: OwnedSemaphorePermit,
     ) -> Result<(PredictResponse, ResponseMetadata), Status> {
@@ -276,7 +251,7 @@ impl TextEmbeddingsService {
 
         let response = self
             .infer
-            .predict(inputs, truncate, truncation_direction, raw_scores, permit)
+            .predict(inputs, truncate, raw_scores, permit)
             .await
             .map_err(ErrorResponse::from)?;
 
@@ -331,33 +306,37 @@ impl TextEmbeddingsService {
     #[instrument(skip_all)]
     async fn tokenize_inner(&self, request: EncodeRequest) -> Result<EncodeResponse, Status> {
         let inputs = request.inputs;
-        let (encoded_inputs, encoding) = self
+        let encoding = self
             .infer
-            .tokenize(
-                inputs.clone(),
-                request.add_special_tokens,
-                request.prompt_name,
-            )
+            .tokenize(inputs.clone(), request.add_special_tokens)
             .await
             .map_err(ErrorResponse::from)?;
-        let inputs = encoded_inputs.unwrap_or(inputs);
-
-        let tokens: Vec<SimpleToken> = into_tokens(encoding, &inputs)
-            .into_iter()
-            .map(|t| {
-                let CoreSimpleToken {
-                    id,
-                    text,
-                    special,
-                    start,
-                    stop,
-                } = t;
-                SimpleToken {
-                    id,
-                    text,
-                    special,
-                    start: start.map(|s| s as u32),
-                    stop: stop.map(|s| s as u32),
+        let tokens: Vec<SimpleToken> = encoding
+            .get_ids()
+            .iter()
+            .zip(encoding.get_offsets())
+            .zip(encoding.get_special_tokens_mask())
+            .zip(encoding.get_tokens())
+            .map(|(((&id, &(start, stop)), special), token)| {
+                let special = *special == 1;
+                match special {
+                    true => SimpleToken {
+                        id,
+                        text: token.clone(),
+                        special,
+                        start: None,
+                        stop: None,
+                    },
+                    false => {
+                        let text: String = inputs.chars().skip(start).take(stop - start).collect();
+                        SimpleToken {
+                            id,
+                            text,
+                            special,
+                            start: Some(start as u32),
+                            stop: Some(stop as u32),
+                        }
+                    }
                 }
             })
             .collect();
@@ -590,7 +569,7 @@ impl grpc::embed_server::Embed for TextEmbeddingsService {
         &self,
         request: Request<EmbedRequest>,
     ) -> Result<Response<EmbedResponse>, Status> {
-        metrics::counter!("te_request_count", "method" => "single").increment(1);
+        metrics::increment_counter!("te_request_count", "method" => "single");
 
         let permit = self
             .infer
@@ -601,7 +580,7 @@ impl grpc::embed_server::Embed for TextEmbeddingsService {
         let (response, metadata) = self.embed_pooled_inner(request, permit).await?;
         let headers = HeaderMap::from(metadata);
 
-        metrics::counter!("te_request_success", "method" => "single").increment(1);
+        metrics::increment_counter!("te_request_success", "method" => "single");
 
         Ok(Response::from_parts(
             MetadataMap::from_headers(headers),
@@ -630,8 +609,7 @@ impl grpc::embed_server::Embed for TextEmbeddingsService {
         &self,
         request: Request<EmbedSparseRequest>,
     ) -> Result<Response<EmbedSparseResponse>, Status> {
-        let counter = metrics::counter!("te_request_count", "method" => "single");
-        counter.increment(1);
+        metrics::increment_counter!("te_request_count", "method" => "single");
 
         let permit = self
             .infer
@@ -642,8 +620,7 @@ impl grpc::embed_server::Embed for TextEmbeddingsService {
         let (response, metadata) = self.embed_sparse_inner(request, permit).await?;
         let headers = HeaderMap::from(metadata);
 
-        let counter = metrics::counter!("te_request_count", "method" => "single");
-        counter.increment(1);
+        metrics::increment_counter!("te_request_success", "method" => "single");
 
         Ok(Response::from_parts(
             MetadataMap::from_headers(headers),
@@ -672,8 +649,7 @@ impl grpc::embed_server::Embed for TextEmbeddingsService {
         &self,
         request: Request<EmbedAllRequest>,
     ) -> Result<Response<EmbedAllResponse>, Status> {
-        let counter = metrics::counter!("te_request_count", "method" => "single");
-        counter.increment(1);
+        metrics::increment_counter!("te_request_count", "method" => "single");
 
         let permit = self
             .infer
@@ -684,8 +660,7 @@ impl grpc::embed_server::Embed for TextEmbeddingsService {
         let (response, metadata) = self.embed_all_inner(request, permit).await?;
         let headers = HeaderMap::from(metadata);
 
-        let counter = metrics::counter!("te_request_count", "method" => "single");
-        counter.increment(1);
+        metrics::increment_counter!("te_request_success", "method" => "single");
 
         Ok(Response::from_parts(
             MetadataMap::from_headers(headers),
@@ -718,7 +693,7 @@ impl grpc::predict_server::Predict for TextEmbeddingsService {
         &self,
         request: Request<PredictRequest>,
     ) -> Result<Response<PredictResponse>, Status> {
-        metrics::counter!("te_request_count", "method" => "single").increment(1);
+        metrics::increment_counter!("te_request_count", "method" => "single");
 
         let permit = self
             .infer
@@ -726,19 +701,12 @@ impl grpc::predict_server::Predict for TextEmbeddingsService {
             .map_err(ErrorResponse::from)?;
 
         let request = request.into_inner();
-        let truncation_direction = convert_truncation_direction(request.truncation_direction);
         let (response, metadata) = self
-            .predict_inner(
-                request.inputs,
-                request.truncate,
-                truncation_direction,
-                request.raw_scores,
-                permit,
-            )
+            .predict_inner(request.inputs, request.truncate, request.raw_scores, permit)
             .await?;
         let headers = HeaderMap::from(metadata);
 
-        metrics::counter!("te_request_success", "method" => "single").increment(1);
+        metrics::increment_counter!("te_request_success", "method" => "single");
 
         Ok(Response::from_parts(
             MetadataMap::from_headers(headers),
@@ -751,8 +719,7 @@ impl grpc::predict_server::Predict for TextEmbeddingsService {
         &self,
         request: Request<PredictPairRequest>,
     ) -> Result<Response<PredictResponse>, Status> {
-        metrics::counter!("te_request_count", "method" => "single").increment(1);
-
+        metrics::increment_counter!("te_request_count", "method" => "single");
         let request = request.into_inner();
 
         let mut inputs = request.inputs;
@@ -776,19 +743,12 @@ impl grpc::predict_server::Predict for TextEmbeddingsService {
             .try_acquire_permit()
             .map_err(ErrorResponse::from)?;
 
-        let truncation_direction = convert_truncation_direction(request.truncation_direction);
         let (response, metadata) = self
-            .predict_inner(
-                inputs,
-                request.truncate,
-                truncation_direction,
-                request.raw_scores,
-                permit,
-            )
+            .predict_inner(inputs, request.truncate, request.raw_scores, permit)
             .await?;
         let headers = HeaderMap::from(metadata);
 
-        metrics::counter!("te_request_success", "method" => "single").increment(1);
+        metrics::increment_counter!("te_request_success", "method" => "single");
 
         Ok(Response::from_parts(
             MetadataMap::from_headers(headers),
@@ -807,15 +767,8 @@ impl grpc::predict_server::Predict for TextEmbeddingsService {
         // Clone for move below
         let clone = self.clone();
         let function = |req: PredictRequest, permit: OwnedSemaphorePermit| async move {
-            let truncation_direction = convert_truncation_direction(req.truncation_direction);
             clone
-                .predict_inner(
-                    req.inputs,
-                    req.truncate,
-                    truncation_direction,
-                    req.raw_scores,
-                    permit,
-                )
+                .predict_inner(req.inputs, req.truncate, req.raw_scores, permit)
                 .await
         };
 
@@ -847,15 +800,8 @@ impl grpc::predict_server::Predict for TextEmbeddingsService {
                 }
             };
 
-            let truncation_direction = convert_truncation_direction(req.truncation_direction);
             clone
-                .predict_inner(
-                    inputs,
-                    req.truncate,
-                    truncation_direction,
-                    req.raw_scores,
-                    permit,
-                )
+                .predict_inner(inputs, req.truncate, req.raw_scores, permit)
                 .await
         };
 
@@ -885,30 +831,27 @@ impl grpc::rerank_server::Rerank for TextEmbeddingsService {
 
         let request = request.into_inner();
 
-        if request.texts.is_empty() {
-            let message = "`texts` cannot be empty".to_string();
+        if request.documents.is_empty() {
+            let message = "`documents` cannot be empty".to_string();
             tracing::error!("{message}");
             let err = ErrorResponse {
                 error: message,
                 error_type: ErrorType::Validation,
             };
-            let counter = metrics::counter!("te_request_failure", "err" => "validation");
-            counter.increment(1);
+            metrics::increment_counter!("te_request_failure", "err" => "validation");
             Err(err)?;
         }
 
         match &self.info.model_type {
             ModelType::Classifier(_) => {
-                let counter = metrics::counter!("te_request_failure", "err" => "model_type");
-                counter.increment(1);
+                metrics::increment_counter!("te_request_failure", "err" => "model_type");
                 let message = "model is not a re-ranker model".to_string();
                 tracing::error!("{message}");
                 Err(Status::new(Code::FailedPrecondition, message))
             }
             ModelType::Reranker(_) => Ok(()),
             ModelType::Embedding(_) => {
-                let counter = metrics::counter!("te_request_failure", "err" => "model_type");
-                counter.increment(1);
+                metrics::increment_counter!("te_request_failure", "err" => "model_type");
                 let message = "model is not a classifier model".to_string();
                 tracing::error!("{message}");
                 Err(Status::new(Code::FailedPrecondition, message))
@@ -919,19 +862,12 @@ impl grpc::rerank_server::Rerank for TextEmbeddingsService {
         let rerank_inner = move |query: String,
                                  text: String,
                                  truncate: bool,
-                                 truncation_direction: tokenizers::TruncationDirection,
                                  raw_scores: bool,
                                  infer: Infer| async move {
             let permit = infer.acquire_permit().await;
 
             let response = infer
-                .predict(
-                    (query, text),
-                    truncate,
-                    truncation_direction,
-                    raw_scores,
-                    permit,
-                )
+                .predict((query, text), truncate, raw_scores, permit)
                 .await
                 .map_err(ErrorResponse::from)?;
 
@@ -946,10 +882,9 @@ impl grpc::rerank_server::Rerank for TextEmbeddingsService {
             ))
         };
 
-        let counter = metrics::counter!("te_request_count", "method" => "batch");
-        counter.increment(1);
+        metrics::increment_counter!("te_request_count", "method" => "batch");
 
-        let batch_size = request.texts.len();
+        let batch_size = request.documents.len();
         if batch_size > self.info.max_client_batch_size {
             let message = format!(
                 "batch size {batch_size} > maximum allowed batch size {}",
@@ -960,24 +895,21 @@ impl grpc::rerank_server::Rerank for TextEmbeddingsService {
                 error: message,
                 error_type: ErrorType::Validation,
             };
-            let counter = metrics::counter!("te_request_failure", "err" => "batch_size");
-            counter.increment(1);
+            metrics::increment_counter!("te_request_failure", "err" => "batch_size");
             Err(err)?;
         }
 
         let mut futures = Vec::with_capacity(batch_size);
         let query_chars = request.query.chars().count();
         let mut total_compute_chars = query_chars * batch_size;
-        let truncation_direction = convert_truncation_direction(request.truncation_direction);
 
-        for text in &request.texts {
+        for text in &request.documents {
             total_compute_chars += text.chars().count();
             let local_infer = self.infer.clone();
             futures.push(rerank_inner(
                 request.query.clone(),
                 text.clone(),
                 request.truncate,
-                truncation_direction,
                 request.raw_scores,
                 local_infer,
             ))
@@ -999,7 +931,7 @@ impl grpc::rerank_server::Rerank for TextEmbeddingsService {
             total_queue_time += r.2.as_nanos() as u64;
             total_inference_time += r.3.as_nanos() as u64;
             let text = if request.return_text {
-                Some(request.texts[index].clone())
+                Some(request.documents[index].clone())
             } else {
                 None
             };
@@ -1016,18 +948,17 @@ impl grpc::rerank_server::Rerank for TextEmbeddingsService {
             ranks.push(Rank {
                 index: index as u32,
                 text,
-                score,
+                relevance_score: score,
             })
         }
 
         // Reverse sort
-        ranks.sort_by(|x, y| x.score.partial_cmp(&y.score).unwrap());
+        ranks.sort_by(|x, y| x.relevance_score.partial_cmp(&y.relevance_score).unwrap());
         ranks.reverse();
 
         let batch_size = batch_size as u64;
 
-        let counter = metrics::counter!("te_request_success", "method" => "batch");
-        counter.increment(1);
+        metrics::increment_counter!("te_request_success", "method" => "batch");
 
         let response_metadata = ResponseMetadata::new(
             total_compute_chars,
@@ -1041,7 +972,7 @@ impl grpc::rerank_server::Rerank for TextEmbeddingsService {
         response_metadata.record_metrics();
 
         let message = RerankResponse {
-            ranks,
+            results: ranks,
             metadata: Some(grpc::Metadata::from(&response_metadata)),
         };
 
@@ -1077,16 +1008,14 @@ impl grpc::rerank_server::Rerank for TextEmbeddingsService {
         // Check model type
         match &self.info.model_type {
             ModelType::Classifier(_) => {
-                let counter = metrics::counter!("te_request_failure", "err" => "model_type");
-                counter.increment(1);
+                metrics::increment_counter!("te_request_failure", "err" => "model_type");
                 let message = "model is not a re-ranker model".to_string();
                 tracing::error!("{message}");
                 Err(Status::new(Code::FailedPrecondition, message))
             }
             ModelType::Reranker(_) => Ok(()),
             ModelType::Embedding(_) => {
-                let counter = metrics::counter!("te_request_failure", "err" => "model_type");
-                counter.increment(1);
+                metrics::increment_counter!("te_request_failure", "err" => "model_type");
                 let message = "model is not a classifier model".to_string();
                 tracing::error!("{message}");
                 Err(Status::new(Code::FailedPrecondition, message))
@@ -1098,18 +1027,11 @@ impl grpc::rerank_server::Rerank for TextEmbeddingsService {
                                  query: String,
                                  text: String,
                                  truncate: bool,
-                                 truncation_direction: tokenizers::TruncationDirection,
                                  raw_scores: bool,
                                  infer: Infer,
                                  permit: OwnedSemaphorePermit| async move {
             let response = infer
-                .predict(
-                    (query, text.clone()),
-                    truncate,
-                    truncation_direction,
-                    raw_scores,
-                    permit,
-                )
+                .predict((query, text.clone()), truncate, raw_scores, permit)
                 .await
                 .map_err(ErrorResponse::from)?;
 
@@ -1126,22 +1048,14 @@ impl grpc::rerank_server::Rerank for TextEmbeddingsService {
             ))
         };
 
-        let counter = metrics::counter!("te_request_count", "method" => "batch");
-        counter.increment(1);
+        metrics::increment_counter!("te_request_count", "method" => "batch");
 
         let mut request_stream = request.into_inner();
 
         // Create bounded channel to have an upper bound of spawned tasks
         // We will have at most `max_parallel_stream_requests` messages from this stream in the queue
         let (rerank_sender, mut rerank_receiver) = mpsc::channel::<(
-            (
-                usize,
-                String,
-                String,
-                bool,
-                tokenizers::TruncationDirection,
-                bool,
-            ),
+            (usize, String, String, bool, bool),
             oneshot::Sender<
                 Result<(usize, usize, Duration, Duration, Duration, f32, String), ErrorResponse>,
             >,
@@ -1152,10 +1066,8 @@ impl grpc::rerank_server::Rerank for TextEmbeddingsService {
 
         // Background task that uses the bounded channel
         tokio::spawn(async move {
-            while let Some((
-                (index, query, text, truncate, truncation_direction, raw_scores),
-                mut sender,
-            )) = rerank_receiver.recv().await
+            while let Some(((index, query, text, truncate, raw_scores), mut sender)) =
+                rerank_receiver.recv().await
             {
                 // Wait on permit before spawning the task to avoid creating more tasks than needed
                 let permit = local_infer.acquire_permit().await;
@@ -1167,7 +1079,7 @@ impl grpc::rerank_server::Rerank for TextEmbeddingsService {
                 tokio::spawn(async move {
                     // Select on closed to cancel work if the stream was closed
                     tokio::select! {
-                    result = rerank_inner(index, query, text, truncate, truncation_direction, raw_scores, task_infer, permit) => {
+                    result = rerank_inner(index, query, text, truncate, raw_scores, task_infer, permit) => {
                         let _ = sender.send(result);
                     }
                     _ = sender.closed() => {}
@@ -1206,7 +1118,6 @@ impl grpc::rerank_server::Rerank for TextEmbeddingsService {
             total_compute_chars += request.query.chars().count();
             total_compute_chars += request.text.chars().count();
 
-            let truncation_direction = convert_truncation_direction(request.truncation_direction);
             rerank_sender
                 .send((
                     (
@@ -1214,7 +1125,6 @@ impl grpc::rerank_server::Rerank for TextEmbeddingsService {
                         request.query,
                         request.text,
                         request.truncate,
-                        truncation_direction,
                         raw_scores.unwrap(),
                     ),
                     result_sender,
@@ -1264,7 +1174,7 @@ impl grpc::rerank_server::Rerank for TextEmbeddingsService {
             ranks.push(Rank {
                 index: r.0 as u32,
                 text,
-                score,
+                relevance_score: score,
             })
         }
 
@@ -1276,19 +1186,17 @@ impl grpc::rerank_server::Rerank for TextEmbeddingsService {
                 error: message,
                 error_type: ErrorType::Backend,
             };
-            let counter = metrics::counter!("te_request_failure", "err" => "missing_values");
-            counter.increment(1);
+            metrics::increment_counter!("te_request_failure", "err" => "missing_values");
             Err(err)?;
         }
 
         // Reverse sort
-        ranks.sort_by(|x, y| x.score.partial_cmp(&y.score).unwrap());
+        ranks.sort_by(|x, y| x.relevance_score.partial_cmp(&y.relevance_score).unwrap());
         ranks.reverse();
 
         let batch_size = batch_size as u64;
 
-        let counter = metrics::counter!("te_request_success", "method" => "batch");
-        counter.increment(1);
+        metrics::increment_counter!("te_request_success", "method" => "batch");
 
         let response_metadata = ResponseMetadata::new(
             total_compute_chars,
@@ -1302,7 +1210,7 @@ impl grpc::rerank_server::Rerank for TextEmbeddingsService {
         response_metadata.record_metrics();
 
         let message = RerankResponse {
-            ranks,
+            results: ranks,
             metadata: Some(grpc::Metadata::from(&response_metadata)),
         };
 
@@ -1521,16 +1429,8 @@ impl From<ErrorResponse> for Status {
             ErrorType::Overloaded => Code::ResourceExhausted,
             ErrorType::Validation => Code::InvalidArgument,
             ErrorType::Tokenizer => Code::FailedPrecondition,
-            ErrorType::Empty => Code::InvalidArgument,
         };
 
         Status::new(code, value.error)
-    }
-}
-
-fn convert_truncation_direction(value: i32) -> tokenizers::TruncationDirection {
-    match TruncationDirection::try_from(value).expect("Unexpected enum value") {
-        TruncationDirection::Right => tokenizers::TruncationDirection::Right,
-        TruncationDirection::Left => tokenizers::TruncationDirection::Left,
     }
 }

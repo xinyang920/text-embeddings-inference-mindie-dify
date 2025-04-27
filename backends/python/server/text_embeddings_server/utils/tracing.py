@@ -19,7 +19,7 @@ class UDSOpenTelemetryAioServerInterceptor(OpenTelemetryAioServerInterceptor):
 
     def _start_span(self, handler_call_details, context, set_status_on_exception=False):
         """
-        Rewrite _start_span method to support Unix Domain Socket gRPC contexts
+        Rewrite _start_span method to support Unix Domain Socket gRPC condocuments
         """
 
         # standard attributes
@@ -54,8 +54,10 @@ class UDSOpenTelemetryAioServerInterceptor(OpenTelemetryAioServerInterceptor):
         )
 
 
-def setup_tracing(otlp_endpoint: str, otlp_service_name: str):
-    resource = Resource.create(attributes={"service.name": otlp_service_name})
+def setup_tracing(otlp_endpoint: str):
+    resource = Resource.create(
+        attributes={"service.name": f"text-embeddings-inference.server"}
+    )
     span_exporter = OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True)
     span_processor = BatchSpanProcessor(span_exporter)
 

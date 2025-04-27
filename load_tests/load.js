@@ -2,7 +2,7 @@ import {check} from 'k6';
 import http from 'k6/http';
 import {Trend} from 'k6/metrics';
 
-const host = __ENV.HOST || '127.0.0.1:3000';
+const host = __ENV.HOST || '127.0.0.1:8080';
 
 const totalTime = new Trend('total_time', true);
 const tokenizationTIme = new Trend('tokenization_time', true);
@@ -27,7 +27,7 @@ export const options = {
             executor: 'constant-arrival-rate',
             duration: '30s',
             preAllocatedVUs: 5000,
-            rate: 50,
+            rate: 1000,
             timeUnit: '1s',
             gracefulStop: '1s',
         },
@@ -36,9 +36,8 @@ export const options = {
 
 export default function () {
     const payload = JSON.stringify({
-        inputs: inputs,
-        // query: inputs,
-        // texts: [inputs],
+        query: inputs,
+        documents: [inputs],
         truncate: true,
     });
 

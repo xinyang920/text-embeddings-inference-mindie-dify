@@ -12,10 +12,14 @@ pub enum DType {
         all(feature = "candle", not(feature = "accelerate"))
     ))]
     Float16,
-    #[cfg(any(feature = "python", feature = "candle", feature = "ort"))]
-    Float32,
+    // Bfloat16 is available only when the "python" feature is enabled
     #[cfg(feature = "python")]
     Bfloat16,
+    // Float32 is not available on candle cuda
+    #[cfg(any(feature = "python", feature = "candle"))]
+    Float32,
+    // #[cfg(feature = "candle")]
+    // Q6K,
 }
 
 impl fmt::Display for DType {
@@ -27,33 +31,17 @@ impl fmt::Display for DType {
                 all(feature = "candle", not(feature = "accelerate"))
             ))]
             DType::Float16 => write!(f, "float16"),
-            #[cfg(any(feature = "python", feature = "candle", feature = "ort"))]
-            DType::Float32 => write!(f, "float32"),
+
+            // Bfloat16 is only available with the "python" feature
             #[cfg(feature = "python")]
             DType::Bfloat16 => write!(f, "bfloat16"),
-        }
-    }
-}
 
-#[allow(clippy::derivable_impls)]
-impl Default for DType {
-    fn default() -> Self {
-        #[cfg(any(feature = "accelerate", feature = "mkl", feature = "ort"))]
-        {
-            DType::Float32
-        }
-        #[cfg(not(any(
-            feature = "accelerate",
-            feature = "mkl",
-            feature = "ort",
-            feature = "python"
-        )))]
-        {
-            DType::Float16
-        }
-        #[cfg(feature = "python")]
-        {
-            DType::Bfloat16
+            // Float32 is not available on candle cuda
+            #[cfg(any(feature = "python", feature = "candle"))]
+            DType::Float32 => write!(f, "float32"),
+
+            // #[cfg(feature = "candle")]
+            // DType::Q6K => write!(f, "q6k"),
         }
     }
 }

@@ -1,14 +1,14 @@
 use crate::alibi::alibi_head_slopes;
 use crate::flash_attn::flash_attn_varlen;
 use crate::layers::{HiddenAct, LayerNorm, Linear};
-use crate::models::bert::PositionEmbeddingType;
-use crate::models::jina::JinaEmbeddings;
-use crate::models::{BertConfig, Model};
+use crate::models::bert::{BertConfig, PositionEmbeddingType};
+use crate::models::jina::BertEmbeddings;
+use crate::models::Model;
 use candle::{DType, Device, IndexOp, Result, Tensor};
 use candle_nn::VarBuilder;
 use text_embeddings_backend_core::{Batch, ModelType, Pool};
 
-struct JinaAttention {
+struct AlibiBertAttention {
     qkv_linear: Linear,
     dense: Linear,
     layer_norm: LayerNorm,
@@ -22,7 +22,7 @@ struct JinaAttention {
     span: tracing::Span,
 }
 
-impl JinaAttention {
+impl AlibiBertAttention {
     pub fn load(vb: VarBuilder, config: &BertConfig, alibi_slopes: Option<Tensor>) -> Result<Self> {
         let attention_head_size = config.hidden_size / config.num_attention_heads;
         let all_head_size = config.num_attention_heads * attention_head_size;
@@ -105,8 +105,6 @@ impl JinaAttention {
             max_s,
             self.softmax_scale,
             false,
-            None,
-            None,
         )?;
         let attention = attention.flatten_from(candle::D::Minus2)?;
 
@@ -118,7 +116,7 @@ impl JinaAttention {
 }
 
 struct JinaBertLayer {
-    attention: JinaAttention,
+    attention: AlibiBertAttention,
     gated: Linear,
     output: Linear,
     layer_norm: LayerNorm,
@@ -131,7 +129,7 @@ struct JinaBertLayer {
 
 impl JinaBertLayer {
     pub fn load(vb: VarBuilder, config: &BertConfig, alibi: Option<Tensor>) -> Result<Self> {
-        let attention = JinaAttention::load(vb.pp("attention"), config, alibi)?;
+        let attention = AlibiBertAttention::load(vb.pp("attention"), config, alibi)?;
 
         let gated_weight = vb
             .pp("mlp")
@@ -175,14 +173,14 @@ impl JinaBertLayer {
         let residual = hidden_states.clone();
 
         let hidden_states = self.gated.forward(&hidden_states)?;
-        let gated = hidden_states.narrow(1, 0, self.intermediate_size)?;
+        let gated = hidden_states.i((.., 0..self.intermediate_size))?;
         let gated = match self.act {
             HiddenAct::Gelu => gated.gelu(),
             HiddenAct::Relu => gated.relu(),
             HiddenAct::Swiglu => gated.silu(),
         }?;
 
-        let non_gated = hidden_states.narrow(1, self.intermediate_size, self.intermediate_size)?;
+        let non_gated = hidden_states.i((.., self.intermediate_size..))?;
         let hidden_states = (gated * non_gated)?;
 
         let hidden_states = self.output.forward(&hidden_states)?;
@@ -192,12 +190,12 @@ impl JinaBertLayer {
     }
 }
 
-struct JinaBertEncoder {
+struct BertEncoder {
     layers: Vec<JinaBertLayer>,
     span: tracing::Span,
 }
 
-impl JinaBertEncoder {
+impl BertEncoder {
     pub fn load(vb: VarBuilder, config: &BertConfig, alibi: Option<Tensor>) -> Result<Self> {
         let layers = (0..config.num_hidden_layers)
             .map(|index| {
@@ -206,7 +204,7 @@ impl JinaBertEncoder {
             .collect::<Result<Vec<_>>>()?;
         let span = tracing::span!(tracing::Level::TRACE, "encoder");
 
-        Ok(JinaBertEncoder { layers, span })
+        Ok(BertEncoder { layers, span })
     }
 
     fn forward(&self, hidden_states: &Tensor, cu_seqlens: &Tensor, max_s: usize) -> Result<Tensor> {
@@ -224,8 +222,8 @@ impl JinaBertEncoder {
 }
 
 pub struct FlashJinaBertModel {
-    embeddings: JinaEmbeddings,
-    encoder: JinaBertEncoder,
+    embeddings: BertEmbeddings,
+    encoder: BertEncoder,
     pool: Pool,
     pub device: Device,
 
@@ -243,7 +241,6 @@ impl FlashJinaBertModel {
                 )
             }
             PositionEmbeddingType::Absolute => None,
-            _ => candle::bail!("not supported"),
         };
 
         match vb.device() {
@@ -268,14 +265,14 @@ impl FlashJinaBertModel {
         };
 
         let (embeddings, encoder) = match (
-            JinaEmbeddings::load(vb.pp("embeddings"), config),
-            JinaBertEncoder::load(vb.pp("encoder"), config, alibi.clone()),
+            BertEmbeddings::load(vb.pp("embeddings"), config),
+            BertEncoder::load(vb.pp("encoder"), config, alibi.clone()),
         ) {
             (Ok(embeddings), Ok(encoder)) => (embeddings, encoder),
             (Err(err), _) | (_, Err(err)) => {
                 if let (Ok(embeddings), Ok(encoder)) = (
-                    JinaEmbeddings::load(vb.pp("bert.embeddings"), config),
-                    JinaBertEncoder::load(vb.pp("bert.encoder"), config, alibi.clone()),
+                    BertEmbeddings::load(vb.pp("bert.embeddings"), config),
+                    BertEncoder::load(vb.pp("bert.encoder"), config, alibi.clone()),
                 ) {
                     (embeddings, encoder)
                 } else {
@@ -322,18 +319,11 @@ impl FlashJinaBertModel {
 
         let pooled_embeddings = if has_pooling_requests {
             match self.pool {
-                // CLS and LastToken pooling
-                Pool::Cls | Pool::LastToken => {
+                // CLS pooling
+                Pool::Cls => {
                     if batch_size > 1 {
-                        // Get token indices form cu_seqlens
-                        let mut indices = match self.pool {
-                            Pool::Cls => cu_seqlens.narrow(0, 0, batch_size)?,
-                            Pool::LastToken => {
-                                let end = cu_seqlens.narrow(0, 1, batch_size)?;
-                                (&end - &end.ones_like()?)?
-                            }
-                            _ => unreachable!(),
-                        };
+                        // Get the indices of the cls tokens from cu_seqlens
+                        let mut cls_indices = cu_seqlens.narrow(0, 0, batch_size)?;
 
                         // If raw_indices is empty, we don't need to do anything with
                         // the pooled_indices
@@ -346,22 +336,13 @@ impl FlashJinaBertModel {
                             )?;
 
                             // Only select indices that requires pooling
-                            indices = indices.index_select(&pooled_indices, 0)?
+                            cls_indices = cls_indices.index_select(&pooled_indices, 0)?
                         }
 
-                        // Select tokens
-                        Some(outputs.index_select(&indices, 0)?)
+                        // Select cls tokens
+                        Some(outputs.index_select(&cls_indices, 0)?)
                     } else {
-                        Some(
-                            match self.pool {
-                                Pool::Cls => outputs.i(0)?,
-                                Pool::LastToken => {
-                                    outputs.i(batch.cumulative_seq_lengths[1] as usize - 1)?
-                                }
-                                _ => unreachable!(),
-                            }
-                            .unsqueeze(0)?,
-                        )
+                        Some(outputs.i(0)?)
                     }
                 }
                 // Mean pooling

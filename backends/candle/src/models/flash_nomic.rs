@@ -1,10 +1,9 @@
 use crate::flash_attn::flash_attn_varlen;
-use crate::layers::{get_cos_sin, get_inv_freqs, LayerNorm, Linear};
+use crate::layers::{LayerNorm, Linear};
 use crate::models::nomic::{NomicBertEmbeddings, NomicBertGatedMLP};
 use crate::models::{Model, NomicConfig};
 use candle::{DType, Device, IndexOp, Result, Tensor, D};
 use candle_nn::VarBuilder;
-use candle_rotary::apply_rotary_inplace;
 use text_embeddings_backend_core::{Batch, ModelType, Pool};
 
 struct NomicAttention {
@@ -69,7 +68,7 @@ impl NomicAttention {
         let qkv = qkv.reshape(new_qkv_shape.as_slice())?;
         let qkv = qkv.chunk(3, 1)?;
 
-        apply_rotary_inplace(&qkv[0], &qkv[1], &cos, &sin, true)?;
+        candle_rotary::apply_rotary_inplace(&qkv[0], &qkv[1], &cos, &sin, true)?;
 
         let attention = flash_attn_varlen(
             &qkv[0],
@@ -82,8 +81,6 @@ impl NomicAttention {
             max_s,
             self.softmax_scale,
             false,
-            None,
-            None,
         )?;
         let attention = attention.flatten_from(D::Minus2)?;
 
@@ -223,8 +220,8 @@ impl FlashNomicBertModel {
         let encoder = NomicBertEncoder::load(vb.pp("encoder"), config)?;
 
         let rotary_dim = encoder.layers[0].attention.attention_head_size;
-        let inv_freqs = get_inv_freqs(rotary_dim, config.rotary_emb_base, vb.device(), None)?;
-        let rotary_cache = get_cos_sin(config.n_positions, &inv_freqs, vb.dtype(), false)?;
+        let inv_freqs = candle_rotary::inv_freqs(rotary_dim, config.rotary_emb_base, vb.device())?;
+        let rotary_cache = candle_rotary::cos_sin(config.n_positions, &inv_freqs, vb.dtype())?;
 
         let scaled_rotary_cache = if let Some(scaling_factor) = config.rotary_scaling_factor {
             let new_base = (config.rotary_emb_base
@@ -232,12 +229,11 @@ impl FlashNomicBertModel {
                     / config.max_trained_positions as f32)
                     - (scaling_factor - 1.0)))
                 .powi((rotary_dim as f32 / (rotary_dim as f32 - 2.0)) as i32);
-            let inv_freqs = get_inv_freqs(rotary_dim, new_base, vb.device(), None)?;
-            Some(get_cos_sin(
+            let inv_freqs = candle_rotary::inv_freqs(rotary_dim, new_base, vb.device())?;
+            Some(candle_rotary::cos_sin(
                 config.n_positions,
                 &inv_freqs,
                 vb.dtype(),
-                false,
             )?)
         } else {
             None
@@ -308,18 +304,11 @@ impl FlashNomicBertModel {
 
         let pooled_embeddings = if has_pooling_requests {
             match self.pool {
-                // CLS and LastToken pooling
-                Pool::Cls | Pool::LastToken => {
+                // CLS pooling
+                Pool::Cls => {
                     if batch_size > 1 {
-                        // Get token indices form cu_seqlens
-                        let mut indices = match self.pool {
-                            Pool::Cls => cu_seqlens.narrow(0, 0, batch_size)?,
-                            Pool::LastToken => {
-                                let end = cu_seqlens.narrow(0, 1, batch_size)?;
-                                (&end - &end.ones_like()?)?
-                            }
-                            _ => unreachable!(),
-                        };
+                        // Get the indices of the cls tokens from cu_seqlens
+                        let mut cls_indices = cu_seqlens.narrow(0, 0, batch_size)?;
 
                         // If raw_indices is empty, we don't need to do anything with
                         // the pooled_indices
@@ -332,22 +321,13 @@ impl FlashNomicBertModel {
                             )?;
 
                             // Only select indices that requires pooling
-                            indices = indices.index_select(&pooled_indices, 0)?
+                            cls_indices = cls_indices.index_select(&pooled_indices, 0)?
                         }
 
-                        // Select tokens
-                        Some(outputs.index_select(&indices, 0)?)
+                        // Select cls tokens
+                        Some(outputs.index_select(&cls_indices, 0)?)
                     } else {
-                        Some(
-                            match self.pool {
-                                Pool::Cls => outputs.i(0)?,
-                                Pool::LastToken => {
-                                    outputs.i(batch.cumulative_seq_lengths[1] as usize - 1)?
-                                }
-                                _ => unreachable!(),
-                            }
-                            .unsqueeze(0)?,
-                        )
+                        Some(outputs.i(0)?)
                     }
                 }
                 // Mean pooling

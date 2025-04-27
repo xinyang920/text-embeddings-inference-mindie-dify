@@ -1,5 +1,5 @@
 use anyhow::Result;
-use hf_hub::api::sync::{ApiBuilder, ApiError, ApiRepo};
+use hf_hub::api::sync::ApiBuilder;
 use hf_hub::{Repo, RepoType};
 use insta::internals::YamlMatcher;
 use serde::{Deserialize, Serialize};
@@ -51,44 +51,6 @@ impl From<Vec<Vec<f32>>> for SnapshotScores {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct SnapEmbedding(Vec<f32>);
-
-impl PartialEq for SnapEmbedding {
-    fn eq(&self, other: &Self) -> bool {
-        assert_eq!(self.0.len(), other.0.len());
-
-        let mut sumxx = 0.0;
-        let mut sumyy = 0.0;
-        let mut sumxy = 0.0;
-
-        for (x, y) in self.0.iter().zip(other.0.iter()) {
-            sumxx += x * x;
-            sumyy += y * y;
-            sumxy += x * y;
-        }
-
-        (sumxy / (sumxx * sumyy).sqrt()) > 0.999
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
-pub struct SnapshotEmbeddings(Vec<SnapEmbedding>);
-
-impl Deref for SnapshotEmbeddings {
-    type Target = Vec<SnapEmbedding>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl From<Vec<Vec<f32>>> for SnapshotEmbeddings {
-    fn from(value: Vec<Vec<f32>>) -> Self {
-        Self(value.into_iter().map(|v| SnapEmbedding(v)).collect())
-    }
-}
-
 pub fn sort_embeddings(embeddings: Embeddings) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
     let mut pooled_embeddings = Vec::new();
     let mut raw_embeddings = Vec::new();
@@ -107,15 +69,7 @@ pub fn download_artifacts(
     model_id: &'static str,
     revision: Option<&'static str>,
 ) -> Result<PathBuf> {
-    let mut builder = ApiBuilder::from_env().with_progress(false);
-
-    if let Some(cache_dir) = std::env::var_os("HUGGINGFACE_HUB_CACHE") {
-        builder = builder.with_cache_dir(cache_dir.into());
-    }
-
-    if let Ok(origin) = std::env::var("HF_HUB_USER_AGENT_ORIGIN") {
-        builder = builder.with_user_agent("origin", origin.as_str());
-    }
+    let builder = ApiBuilder::new().with_progress(false);
 
     let api = builder.build().unwrap();
     let api_repo = if let Some(revision) = revision {
@@ -131,64 +85,20 @@ pub fn download_artifacts(
     api_repo.get("config.json")?;
     api_repo.get("tokenizer.json")?;
 
-    let model_files = match download_safetensors(&api_repo) {
+    let model_root = match api_repo.get("model.safetensors") {
         Ok(p) => p,
         Err(_) => {
-            tracing::warn!("safetensors weights not found. Using `pytorch_model.bin` instead. Model loading will be significantly slower.");
-            tracing::info!("Downloading `pytorch_model.bin`");
             let p = api_repo.get("pytorch_model.bin")?;
-            vec![p]
+            tracing::warn!("`model.safetensors` not found. Using `pytorch_model.bin` instead. Model loading will be significantly slower.");
+            p
         }
-    };
-    let model_root = model_files[0].parent().unwrap().to_path_buf();
+    }
+        .parent().unwrap()
+        .to_path_buf();
     Ok(model_root)
 }
 
-fn download_safetensors(api: &ApiRepo) -> Result<Vec<PathBuf>, ApiError> {
-    // Single file
-    tracing::info!("Downloading `model.safetensors`");
-    match api.get("model.safetensors") {
-        Ok(p) => return Ok(vec![p]),
-        Err(err) => tracing::warn!("Could not download `model.safetensors`: {}", err),
-    };
-
-    // Sharded weights
-    // Download and parse index file
-    tracing::info!("Downloading `model.safetensors.index.json`");
-    let index_file = api.get("model.safetensors.index.json")?;
-    let index_file_string: String =
-        std::fs::read_to_string(index_file).expect("model.safetensors.index.json is corrupted");
-    let json: serde_json::Value = serde_json::from_str(&index_file_string)
-        .expect("model.safetensors.index.json is corrupted");
-
-    let weight_map = match json.get("weight_map") {
-        Some(serde_json::Value::Object(map)) => map,
-        _ => panic!("model.safetensors.index.json is corrupted"),
-    };
-
-    let mut safetensors_filenames = std::collections::HashSet::new();
-    for value in weight_map.values() {
-        if let Some(file) = value.as_str() {
-            safetensors_filenames.insert(file.to_string());
-        }
-    }
-
-    // Download weight files
-    let mut safetensors_files = Vec::new();
-    for n in safetensors_filenames {
-        tracing::info!("Downloading `{}`", n);
-        safetensors_files.push(api.get(&n)?);
-    }
-
-    Ok(safetensors_files)
-}
-
-#[allow(unused)]
-pub(crate) fn relative_matcher() -> YamlMatcher<SnapshotScores> {
-    YamlMatcher::new()
-}
-
-pub fn cosine_matcher() -> YamlMatcher<SnapshotEmbeddings> {
+pub fn relative_matcher() -> YamlMatcher<SnapshotScores> {
     YamlMatcher::new()
 }
 
@@ -202,7 +112,7 @@ pub fn load_tokenizer(model_root: &Path) -> Result<Tokenizer> {
             // We are forced to clone since `Tokenizer` does not have a `get_mut` for `pre_tokenizer`
             let mut m = m.clone();
             m.set_prepend_scheme(PrependScheme::First);
-            tokenizer.with_pre_tokenizer(Some(PreTokenizerWrapper::Metaspace(m)));
+            tokenizer.with_pre_tokenizer(PreTokenizerWrapper::Metaspace(m));
         } else if let PreTokenizerWrapper::Sequence(s) = pre_tokenizer {
             let pre_tokenizers = s.get_pre_tokenizers();
             // Check if we have a Metaspace pre tokenizer in the sequence
@@ -227,9 +137,9 @@ pub fn load_tokenizer(model_root: &Path) -> Result<Tokenizer> {
                     }
                     new_pre_tokenizers.push(pre_tokenizer);
                 }
-                tokenizer.with_pre_tokenizer(Some(PreTokenizerWrapper::Sequence(Sequence::new(
+                tokenizer.with_pre_tokenizer(PreTokenizerWrapper::Sequence(Sequence::new(
                     new_pre_tokenizers,
-                ))));
+                )));
             }
         }
     }

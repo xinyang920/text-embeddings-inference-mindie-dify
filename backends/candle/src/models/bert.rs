@@ -35,7 +35,6 @@ pub enum PositionEmbeddingType {
     #[default]
     Absolute,
     Alibi,
-    Rope,
 }
 
 #[derive(Debug)]
@@ -474,12 +473,11 @@ pub struct BertSpladeHead {
 
 impl BertSpladeHead {
     pub(crate) fn load(vb: VarBuilder, config: &BertConfig) -> Result<Self> {
+        let vb = vb.pp("cls.predictions");
         let transform_weight = vb
-            .pp("cls.predictions.transform.dense")
+            .pp("transform.dense")
             .get((config.hidden_size, config.hidden_size), "weight")?;
-        let transform_bias = vb
-            .pp("cls.predictions.transform.dense")
-            .get(config.hidden_size, "bias")?;
+        let transform_bias = vb.pp("transform.dense").get(config.hidden_size, "bias")?;
         let transform = Linear::new(
             transform_weight,
             Some(transform_bias),
@@ -487,25 +485,15 @@ impl BertSpladeHead {
         );
 
         let transform_layer_norm = LayerNorm::load(
-            vb.pp("cls.predictions.transform.LayerNorm"),
+            vb.pp("transform.LayerNorm"),
             config.hidden_size,
             config.layer_norm_eps as f32,
         )?;
 
-        // When `pytorch_model.bin` originally contains `cls.predictions.decoder.weight` but the
-        // tensor content shares the memory with the content on `bert.embeddings.word_embeddings.weight`,
-        // e.g. a subset of the original tensor, when converting the file from BIN to Safentensors
-        // the latter tensor that shares the memory with the previous will be removed
-        let decoder_weight = if vb.contains_tensor("cls.predictions.decoder.weight") {
-            vb.pp("cls.predictions.decoder")
-                .get((config.vocab_size, config.hidden_size), "weight")?
-        } else {
-            vb.pp("bert.embeddings.word_embeddings")
-                .get((config.vocab_size, config.hidden_size), "weight")?
-        };
-        // Same applies for the tensor `cls.predictions.decoder.bias` which is shared with
-        // `cls.predictions.bias` and removed in the BIN to Safentensors conversion
-        let decoder_bias = vb.pp("cls.predictions").get(config.vocab_size, "bias")?;
+        let decoder_weight = vb
+            .pp("decoder")
+            .get((config.vocab_size, config.hidden_size), "weight")?;
+        let decoder_bias = vb.get(config.vocab_size, "bias")?;
         let decoder = Linear::new(decoder_weight, Some(decoder_bias), Some(HiddenAct::Relu));
 
         Ok(Self {
@@ -650,10 +638,6 @@ impl BertModel {
                 (pool, Some(classifier), None)
             }
             ModelType::Embedding(pool) => {
-                if pool == Pool::LastToken {
-                    candle::bail!("`last_token` is not supported for Bert");
-                }
-
                 let splade = if pool == Pool::Splade {
                     Some(BertSpladeHead::load_roberta(vb.clone(), config)?)
                 } else {
@@ -815,7 +799,7 @@ impl BertModel {
         let input_ids = Tensor::from_vec(input_ids, shape, &self.device)?;
         let type_ids = Tensor::from_vec(type_ids, shape, &self.device)?;
         let position_ids = Tensor::from_vec(position_ids, shape, &self.device)?;
-        let mut input_lengths =
+        let input_lengths =
             Tensor::from_vec(input_lengths, (batch_size, 1), &self.device)?.to_dtype(self.dtype)?;
 
         let embedding_output = self
@@ -848,8 +832,6 @@ impl BertModel {
             let pooled_embeddings = match self.pool {
                 // CLS pooling
                 Pool::Cls => outputs.i((.., 0))?,
-                // Last token pooling is not supported for this model
-                Pool::LastToken => unreachable!(),
                 // Mean pooling
                 Pool::Mean => {
                     if let Some(ref attention_mask) = attention_mask {
@@ -858,7 +840,6 @@ impl BertModel {
                         if let Some(pooled_indices) = pooled_indices {
                             // Select values in the batch
                             attention_mask = attention_mask.index_select(&pooled_indices, 0)?;
-                            input_lengths = input_lengths.index_select(&pooled_indices, 0)?;
                         };
 
                         // Mask padded values
